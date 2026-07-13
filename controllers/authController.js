@@ -9,18 +9,23 @@ const loginUser = async (req, res) => {
 
   const user = await User.findOne({ email });
 
-  if (user && (await user.matchPassword(password))) {
-    generateToken(res, user._id);
-
-    res.json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      avatar: user.avatar,
-    });
-  } else {
-    res.status(401).json({ message: 'Invalid email or password' });
+  if (!user) {
+    return res.status(404).json({ message: 'No account found with this email address. Please sign up first.' });
   }
+
+  const isMatch = await user.matchPassword(password);
+  
+  if (!isMatch) {
+    return res.status(401).json({ message: 'Incorrect password. Please try again.' });
+  }
+
+  generateToken(res, user._id);
+  res.json({
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    avatar: user.avatar,
+  });
 };
 
 // @desc    Register a new user
@@ -32,7 +37,11 @@ const registerUser = async (req, res) => {
   const userExists = await User.findOne({ email });
 
   if (userExists) {
-    return res.status(400).json({ message: 'User already exists' });
+    return res.status(400).json({ message: 'An account with this email address already exists. Please log in.' });
+  }
+
+  if (!password || password.length < 6) {
+    return res.status(400).json({ message: 'Password must be at least 6 characters long.' });
   }
 
   const user = await User.create({
