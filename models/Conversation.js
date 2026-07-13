@@ -13,7 +13,7 @@ const conversationSchema = new mongoose.Schema({
   modelUsed: {
     type: String,
     enum: ['gpt', 'grok'],
-    default: 'gpt',
+    default: 'grok',
   },
 }, {
   timestamps: true,

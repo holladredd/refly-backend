@@ -10,7 +10,7 @@ export const createConversation = async (req, res) => {
     const conversation = await Conversation.create({
       userId: req.user._id,
       title: title || 'New Conversation',
-      modelUsed: modelUsed || 'gpt',
+      modelUsed: modelUsed || 'grok',
     });
     res.status(201).json(conversation);
   } catch (error) {
@@ -119,7 +119,7 @@ export const handleChatMessage = async (req, res) => {
       conversation = await Conversation.create({
         userId: req.user._id,
         title: content.substring(0, 30) || 'New Conversation',
-        modelUsed: model || 'gpt',
+        modelUsed: model || 'grok',
       });
     }
 
