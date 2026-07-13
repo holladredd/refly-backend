@@ -1,5 +1,7 @@
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
+import OpenAI from 'openai';
+import axios from 'axios';
 
 // @desc    Create new conversation
 // @route   POST /api/conversations
@@ -130,30 +132,88 @@ export const handleChatMessage = async (req, res) => {
       content,
     });
 
-    // 2. Generate/Simulate AI Response (Milestone 3 will integrate real APIs)
-    // For now we mock the AI response + mock media extraction
-    const mockKeywords = ['lagos', 'night', 'drone', 'city'];
-    const aiContent = `Here are some media resources that might match your search for: "${content}". I've searched Pexels and Unsplash.`;
-    const mockMediaResults = [
-      {
-        id: 'mock-1',
-        title: 'Cinematic Drone Video',
-        thumbnail: 'https://images.pexels.com/photos/3889843/pexels-photo-3889843.jpeg?auto=compress&cs=tinysrgb&w=400',
-        url: 'https://www.pexels.com/video/drone-footage-of-a-green-forest-3889843/',
-        previewUrl: 'https://www.pexels.com/video/drone-footage-of-a-green-forest-3889843/',
-        source: 'Pexels',
-        author: 'Taryn Elliott',
-        type: 'video',
-        license: 'Pexels License (Free)',
-      }
+    // 2. Fetch conversation history for context
+    const previousMessages = await Message.find({ conversationId: conversation._id }).sort({ createdAt: 1 });
+    const formattedHistory = previousMessages.map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+
+    // System instruction to extract Pexels query
+    const messagesForGrok = [
+      { 
+        role: 'system', 
+        content: `You are Refly, an AI assistant helping creators find stock media. Respond cheerfully and concisely to the user's request. 
+IMPORTANT: You MUST append a 1-3 word search query at the very end of your response inside brackets like this: [QUERY: search terms here]. This query will be used to search the Pexels API.`
+      },
+      ...formattedHistory
     ];
 
-    // 3. Save Assistant Message
+    // Connect to Grok (x.ai)
+    let aiContent = "I'm sorry, I couldn't connect to the AI service.";
+    let searchQuery = content;
+
+    try {
+      const openai = new OpenAI({
+        apiKey: process.env.GROK_API_KEY,
+        baseURL: 'https://api.x.ai/v1',
+      });
+
+      const completion = await openai.chat.completions.create({
+        model: 'grok-beta',
+        messages: messagesForGrok,
+      });
+
+      aiContent = completion.choices[0].message.content;
+
+      // Extract the [QUERY: ...] part
+      const queryRegex = /\[QUERY:\s*(.*?)\]/i;
+      const match = aiContent.match(queryRegex);
+      if (match && match[1]) {
+        searchQuery = match[1].replace(/['"]/g, '').trim();
+        aiContent = aiContent.replace(queryRegex, '').trim();
+      }
+    } catch (error) {
+      console.error('Grok API Error:', error.message);
+      aiContent = `Grok API Error: ${error.message}. Please ensure GROK_API_KEY is set.`;
+    }
+
+    // 3. Fetch Real Media from Pexels
+    let mediaResults = [];
+    if (process.env.PEXELS_API_KEY) {
+      try {
+        const pexelsRes = await axios.get(`https://api.pexels.com/videos/search?query=${encodeURIComponent(searchQuery)}&per_page=4`, {
+          headers: {
+            Authorization: process.env.PEXELS_API_KEY
+          }
+        });
+        
+        if (pexelsRes.data && pexelsRes.data.videos) {
+          mediaResults = pexelsRes.data.videos.map(video => ({
+            id: video.id.toString(),
+            title: `Stock Video: ${searchQuery}`,
+            thumbnail: video.image,
+            url: video.url,
+            previewUrl: video.video_files[0]?.link || video.url,
+            source: 'Pexels',
+            author: video.user.name,
+            type: 'video',
+            license: 'Free to use',
+          }));
+        }
+      } catch (err) {
+        console.error('Pexels API Error:', err.message);
+      }
+    } else {
+      console.warn('PEXELS_API_KEY is not set in environment variables.');
+    }
+
+    // 4. Save Assistant Message
     const assistantMessage = await Message.create({
       conversationId: conversation._id,
       role: 'assistant',
       content: aiContent,
-      mediaResults: mockMediaResults,
+      mediaResults: mediaResults,
     });
 
     // Update conversation updatedAt timestamp
