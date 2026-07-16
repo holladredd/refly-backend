@@ -104,7 +104,307 @@ export const deleteConversation = async (req, res) => {
   }
 };
 
-// @desc    Post a new message in a conversation (handles AI flow basics)
+// ─── Helper: fetch media results for a search query ───────────────────────────
+async function fetchMediaResults(searchQuery) {
+  let mediaResults = [];
+
+  // Pexels Videos
+  if (process.env.PEXELS_API_KEY) {
+    try {
+      const pexelsRes = await axios.get(
+        `https://api.pexels.com/videos/search?query=${encodeURIComponent(searchQuery)}&per_page=10`,
+        { headers: { Authorization: process.env.PEXELS_API_KEY } },
+      );
+      if (pexelsRes.data?.videos) {
+        mediaResults.push(
+          ...pexelsRes.data.videos.map((video) => ({
+            id: `px-v-${video.id}`,
+            title: video.url?.split("/").filter(Boolean).pop()?.replace(/-/g, " ") || `Stock Video: ${searchQuery}`,
+            thumbnail: video.image,
+            url: video.url,
+            previewUrl: video.video_files[0]?.link || video.url,
+            source: "Pexels",
+            author: video.user.name,
+            type: "video",
+            license: "Free to use",
+          })),
+        );
+      }
+
+      // Pexels Images
+      const pexelsImgRes = await axios.get(
+        `https://api.pexels.com/v1/search?query=${encodeURIComponent(searchQuery)}&per_page=10`,
+        { headers: { Authorization: process.env.PEXELS_API_KEY } },
+      );
+      if (pexelsImgRes.data?.photos) {
+        mediaResults.push(
+          ...pexelsImgRes.data.photos.map((photo) => ({
+            id: `px-i-${photo.id}`,
+            title: photo.alt || `Stock Photo: ${searchQuery}`,
+            thumbnail: photo.src.medium,
+            url: photo.url,
+            previewUrl: photo.src.large,
+            source: "Pexels",
+            author: photo.photographer,
+            type: "image",
+            license: "Free to use",
+          })),
+        );
+      }
+    } catch (err) {
+      console.error("Pexels API Error:", err.message);
+    }
+  }
+
+  // Dailymotion
+  try {
+    const dmRes = await axios.get(
+      `https://api.dailymotion.com/videos?search=${encodeURIComponent(searchQuery)}&limit=5&fields=id,title,thumbnail_480_url,url,owner.screenname,duration`,
+    );
+    if (dmRes.data?.list) {
+      mediaResults.push(
+        ...dmRes.data.list.map((v) => ({
+          id: `dm-${v.id}`,
+          title: v.title,
+          thumbnail: v.thumbnail_480_url,
+          url: v.url || `https://www.dailymotion.com/video/${v.id}`,
+          previewUrl: v.url || `https://www.dailymotion.com/video/${v.id}`,
+          source: "Dailymotion",
+          author: v["owner.screenname"] || "Dailymotion Creator",
+          type: "video",
+          license: "Standard License",
+        })),
+      );
+    }
+  } catch (err) {
+    console.error("Dailymotion Search Error:", err.message);
+  }
+
+  // YouTube
+  try {
+    const ytRes = await ytSearch(searchQuery);
+    if (ytRes?.videos?.length > 0) {
+      mediaResults.push(
+        ...ytRes.videos.slice(0, 8).map((video) => ({
+          id: `yt-${video.videoId}`,
+          title: video.title,
+          thumbnail: video.thumbnail,
+          url: video.url,
+          previewUrl: video.url,
+          source: "YouTube",
+          author: video.author.name,
+          duration: video.duration?.timestamp || null,
+          views: video.views || null,
+          type: "video",
+          license: "Standard YouTube License",
+        })),
+      );
+    }
+  } catch (err) {
+    console.error("YouTube Search Error:", err.message);
+  }
+
+  // Randomize and limit to 20
+  return mediaResults.sort(() => Math.random() - 0.5).slice(0, 20);
+}
+
+// ─── Helper: generate per-item description + usage tip via Grok ───────────────
+async function enrichWithDescriptions(mediaResults, searchQuery) {
+  if (!mediaResults.length || !process.env.GROK_API_KEY) return mediaResults;
+
+  try {
+    // Always use the stable working key for descriptions, never V4
+    const openaiForSummary = new OpenAI({
+      apiKey: process.env.GROK_API_KEY,
+      baseURL: "https://api.x.ai/v1",
+    });
+
+    const itemList = mediaResults
+      .map(
+        (m, i) =>
+          `${i + 1}. [${m.type.toUpperCase()}] "${m.title}" by ${m.author || "Unknown"} (Source: ${m.source})`,
+      )
+      .join("\n");
+
+    const summaryCompletion = await openaiForSummary.chat.completions.create({
+      model: "grok-4",
+      messages: [
+        {
+          role: "system",
+          content: `You are a media research assistant for content creators. 
+For each media item listed below, provide a short JSON object with two fields:
+- "desc": one sentence (max 18 words) describing what the content visually shows
+- "usage": one sentence (max 18 words) on how a content creator can use it (e.g., B-roll, thumbnail, intro clip, background)
+
+Return ONLY a valid JSON array of these objects, one per item in the same order. No extra text outside the array.`,
+        },
+        {
+          role: "user",
+          content: `Topic: "${searchQuery}"\n\nMedia items:\n${itemList}`,
+        },
+      ],
+    });
+
+    const raw = summaryCompletion.choices[0].message.content.trim();
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (!match) return mediaResults;
+
+    const parsed = JSON.parse(match[0]);
+
+    if (Array.isArray(parsed)) {
+      return mediaResults.map((m, i) => ({
+        ...m,
+        description: parsed[i]?.desc || null,
+        usageTip: parsed[i]?.usage || null,
+      }));
+    }
+  } catch (err) {
+    console.error("Media description error:", err.message);
+  }
+
+  return mediaResults;
+}
+
+// @desc    Post a new message — STREAMING SSE response
+// @route   POST /api/chat/stream
+// @access  Private
+export const handleChatStream = async (req, res) => {
+  const { conversationId, message: content, model } = req.body;
+
+  // Set SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no"); // Disable Nginx buffering on Render
+  res.flushHeaders();
+
+  const send = (event, data) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    let conversation;
+    if (conversationId) {
+      conversation = await Conversation.findOne({
+        _id: conversationId,
+        userId: req.user._id,
+      });
+    }
+    if (!conversation) {
+      conversation = await Conversation.create({
+        userId: req.user._id,
+        title: content.substring(0, 40) || "New Conversation",
+        modelUsed: model || "grok",
+      });
+      // Notify client about the new conversation ID
+      send("conversation", { conversationId: conversation._id });
+    }
+
+    // Save user message
+    const userMessage = await Message.create({
+      conversationId: conversation._id,
+      role: "user",
+      content,
+    });
+    send("user_message", userMessage);
+
+    // Build conversation history for context
+    const previousMessages = await Message.find({
+      conversationId: conversation._id,
+    }).sort({ createdAt: 1 });
+
+    const formattedHistory = previousMessages.map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+
+    const messagesForGrok = [
+      {
+        role: "system",
+        content: `You are Refly, an AI research assistant helping creators find stock media. 
+Give a helpful, informative response about the user's topic. 
+IMPORTANT: At the very end of your response, append a 1-4 word search query inside brackets: [QUERY: search terms]. This will be used to search media APIs.`,
+      },
+      ...formattedHistory,
+    ];
+
+    // Pick API key based on model
+    const selectedModel = model || "grok-4";
+    const apiKey = selectedModel.startsWith("grok-4")
+      ? process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY
+      : process.env.GROK_API_KEY;
+
+    const openai = new OpenAI({ apiKey, baseURL: "https://api.x.ai/v1" });
+
+    // ── STREAM the AI text ──
+    let fullAiContent = "";
+    let searchQuery = content;
+
+    try {
+      const stream = await openai.chat.completions.create({
+        model: selectedModel,
+        messages: messagesForGrok,
+        stream: true,
+      });
+
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content || "";
+        if (delta) {
+          fullAiContent += delta;
+          send("chunk", { text: delta });
+        }
+      }
+
+      // Extract [QUERY: ...] from the completed text
+      const queryRegex = /\[QUERY:\s*(.*?)\]/i;
+      const queryMatch = fullAiContent.match(queryRegex);
+      if (queryMatch?.[1]) {
+        searchQuery = queryMatch[1].replace(/['"]/g, "").trim();
+        fullAiContent = fullAiContent.replace(queryRegex, "").trim();
+      }
+    } catch (err) {
+      console.error("Grok Stream Error:", err.message);
+      const errMsg = `I encountered an issue connecting to the AI (${err.message}). Here are some relevant media results for your query.`;
+      fullAiContent = errMsg;
+      send("chunk", { text: errMsg });
+    }
+
+    // ── Fetch media ──
+    send("status", { message: "Finding media resources..." });
+    let mediaResults = await fetchMediaResults(searchQuery);
+
+    // ── Enrich with descriptions ──
+    send("status", { message: "Generating descriptions..." });
+    mediaResults = await enrichWithDescriptions(mediaResults, searchQuery);
+
+    // ── Save assistant message ──
+    const assistantMessage = await Message.create({
+      conversationId: conversation._id,
+      role: "assistant",
+      content: fullAiContent,
+      mediaResults,
+      modelUsed: selectedModel,
+    });
+
+    conversation.updatedAt = new Date();
+    await conversation.save();
+
+    // ── Send final "done" event with saved messages ──
+    send("done", {
+      conversationId: conversation._id,
+      userMessage,
+      assistantMessage,
+    });
+
+    res.end();
+  } catch (error) {
+    console.error("Stream handler error:", error.message);
+    send("error", { message: error.message });
+    res.end();
+  }
+};
+
+// @desc    Post a new message (non-streaming fallback)
 // @route   POST /api/chat
 // @access  Private
 export const handleChatMessage = async (req, res) => {
@@ -118,69 +418,56 @@ export const handleChatMessage = async (req, res) => {
         userId: req.user._id,
       });
     }
-
-    // Create a new conversation if it doesn't exist yet
     if (!conversation) {
       conversation = await Conversation.create({
         userId: req.user._id,
-        title: content.substring(0, 30) || "New Conversation",
+        title: content.substring(0, 40) || "New Conversation",
         modelUsed: model || "grok",
       });
     }
 
-    // 1. Save User Message
     const userMessage = await Message.create({
       conversationId: conversation._id,
       role: "user",
       content,
     });
 
-    // 2. Fetch conversation history for context
     const previousMessages = await Message.find({
       conversationId: conversation._id,
     }).sort({ createdAt: 1 });
+
     const formattedHistory = previousMessages.map((msg) => ({
       role: msg.role,
       content: msg.content,
     }));
 
-    // System instruction to extract Pexels query
     const messagesForGrok = [
       {
         role: "system",
-        content: `You are Refly, an AI assistant helping creators find stock media. Respond cheerfully and concisely to the user's request. 
-IMPORTANT: You MUST append a 1-3 word search query at the very end of your response inside brackets like this: [QUERY: search terms here]. This query will be used to search the Pexels API.`,
+        content: `You are Refly, an AI research assistant helping creators find stock media. Give a helpful response and append [QUERY: search terms] at the end.`,
       },
       ...formattedHistory,
     ];
 
-    // Connect to Grok (x.ai)
     let aiContent = "I'm sorry, I couldn't connect to the AI service.";
     let searchQuery = content;
 
     try {
-      const selectedModel = req.body.model || "grok-4.5";
-      // Route to the correct API key based on model version
+      const selectedModel = model || "grok-4";
       const apiKey = selectedModel.startsWith("grok-4")
         ? process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY
         : process.env.GROK_API_KEY;
 
-      const openai = new OpenAI({
-        apiKey,
-        baseURL: "https://api.x.ai/v1",
-      });
-
+      const openai = new OpenAI({ apiKey, baseURL: "https://api.x.ai/v1" });
       const completion = await openai.chat.completions.create({
         model: selectedModel,
         messages: messagesForGrok,
       });
 
       aiContent = completion.choices[0].message.content;
-
-      // Extract the [QUERY: ...] part
       const queryRegex = /\[QUERY:\s*(.*?)\]/i;
       const match = aiContent.match(queryRegex);
-      if (match && match[1]) {
+      if (match?.[1]) {
         searchQuery = match[1].replace(/['"]/g, "").trim();
         aiContent = aiContent.replace(queryRegex, "").trim();
       }
@@ -189,213 +476,21 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
       aiContent = `Grok API Error: ${error.message}. Please ensure GROK_API_KEY is set.`;
     }
 
-    // 3. Fetch Real Media (Pexels + YouTube)
-    let mediaResults = [];
+    let mediaResults = await fetchMediaResults(searchQuery);
+    mediaResults = await enrichWithDescriptions(mediaResults, searchQuery);
 
-    // 3a. Search Pexels Videos
-    if (process.env.PEXELS_API_KEY) {
-      try {
-        const pexelsRes = await axios.get(
-          `https://api.pexels.com/videos/search?query=${encodeURIComponent(searchQuery)}&per_page=15`,
-          {
-            headers: {
-              Authorization: process.env.PEXELS_API_KEY,
-            },
-          },
-        );
-
-        if (pexelsRes.data && pexelsRes.data.videos) {
-          const pexelsVideos = pexelsRes.data.videos.map((video) => ({
-            id: `px-v-${video.id}`,
-            title: `Stock Video: ${searchQuery}`,
-            thumbnail: video.image,
-            url: video.url,
-            previewUrl: video.video_files[0]?.link || video.url,
-            source: "Pexels",
-            author: video.user.name,
-            type: "video",
-            license: "Free to use",
-          }));
-          mediaResults = [...mediaResults, ...pexelsVideos];
-        }
-
-        // Search Pexels Images
-        const pexelsImgRes = await axios.get(
-          `https://api.pexels.com/v1/search?query=${encodeURIComponent(searchQuery)}&per_page=15`,
-          {
-            headers: {
-              Authorization: process.env.PEXELS_API_KEY,
-            },
-          },
-        );
-
-        if (pexelsImgRes.data && pexelsImgRes.data.photos) {
-          const pexelsImages = pexelsImgRes.data.photos.map((photo) => ({
-            id: `px-i-${photo.id}`,
-            title: `Stock Photo: ${searchQuery}`,
-            thumbnail: photo.src.medium,
-            url: photo.url,
-            previewUrl: photo.src.large,
-            source: "Pexels",
-            author: photo.photographer,
-            type: "image",
-            license: "Free to use",
-          }));
-          mediaResults = [...mediaResults, ...pexelsImages];
-        }
-      } catch (err) {
-        console.error("Pexels API Error:", err.message);
-      }
-    } else {
-      console.warn("PEXELS_API_KEY is not set in environment variables.");
-    }
-
-    // 3b. Search YouTube
-    try {
-      const ytRes = await ytSearch(searchQuery);
-      if (ytRes && ytRes.videos && ytRes.videos.length > 0) {
-        const topYtVideos = ytRes.videos.slice(0, 10).map((video) => ({
-          id: `yt-${video.videoId}`,
-          title: video.title,
-          thumbnail: video.thumbnail,
-          url: video.url,
-          previewUrl: video.url,
-          source: "YouTube",
-          author: video.author.name,
-          duration: video.duration?.timestamp || null,
-          views: video.views || null,
-          type: "video",
-          license: "Standard YouTube License",
-        }));
-        mediaResults = [...mediaResults, ...topYtVideos];
-      }
-    } catch (err) {
-      console.error("YouTube Search Error:", err.message);
-    }
-
-    // 3c. Search Vimeo (free, no key needed via public oembed)
-    try {
-      const vimeoRes = await axios.get(
-        `https://api.vimeo.com/videos?query=${encodeURIComponent(searchQuery)}&per_page=5&filter=CC`,
-        {
-          headers: {
-            Authorization: `bearer ${process.env.VIMEO_ACCESS_TOKEN || ""}`,
-            "Content-Type": "application/json",
-          },
-        },
-      );
-      if (vimeoRes.data && vimeoRes.data.data) {
-        const vimeoVideos = vimeoRes.data.data.map((v) => ({
-          id: `vm-${v.uri.replace("/videos/", "")}`,
-          title: v.name,
-          thumbnail:
-            v.pictures?.sizes?.[3]?.link || v.pictures?.sizes?.[0]?.link,
-          url: v.link,
-          previewUrl: v.link,
-          source: "Vimeo",
-          author: v.user?.name || "Vimeo Creator",
-          type: "video",
-          license: "Creative Commons",
-        }));
-        mediaResults = [...mediaResults, ...vimeoVideos];
-      }
-    } catch (err) {
-      // Vimeo is optional — silently skip if token not configured
-      if (err.response?.status !== 401)
-        console.error("Vimeo Search Error:", err.message);
-    }
-
-    // 3d. Search Dailymotion (free public API, no key needed)
-    try {
-      const dmRes = await axios.get(
-        `https://api.dailymotion.com/videos?search=${encodeURIComponent(searchQuery)}&limit=5&fields=id,title,thumbnail_480_url,url,owner.screenname,duration`,
-      );
-      if (dmRes.data && dmRes.data.list) {
-        const dmVideos = dmRes.data.list.map((v) => ({
-          id: `dm-${v.id}`,
-          title: v.title,
-          thumbnail: v.thumbnail_480_url,
-          url: v.url || `https://www.dailymotion.com/video/${v.id}`,
-          previewUrl: v.url || `https://www.dailymotion.com/video/${v.id}`,
-          source: "Dailymotion",
-          author: v["owner.screenname"] || "Dailymotion Creator",
-          type: "video",
-          license: "Standard License",
-        }));
-        mediaResults = [...mediaResults, ...dmVideos];
-      }
-    } catch (err) {
-      console.error("Dailymotion Search Error:", err.message);
-    }
-
-    // Randomize the mediaResults array so it's a mix of sources
-    mediaResults = mediaResults.sort(() => Math.random() - 0.5);
-
-    // 3e. Use Grok to generate a short description/summary for each media item
-    // so users know what each piece of content is about before clicking
-    if (mediaResults.length > 0 && process.env.GROK_API_KEY) {
-      try {
-        const openaiForSummary = new OpenAI({
-          apiKey: process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY,
-          baseURL: "https://api.x.ai/v1",
-        });
-        const summaryPrompt = mediaResults.map(
-          (m, i) =>
-            `${i + 1}. [${m.source}] ${m.title} by ${m.author || "Unknown"}`,
-        );
-        const summaryCompletion =
-          await openaiForSummary.chat.completions.create({
-            model: "grok-4.5",
-            messages: [
-              {
-                role: "system",
-                content: `You are a media research assistant. For each of the following media items, provide a single concise sentence (max 20 words) that: 1) describes what the content shows, and 2) how a content creator could USE it (e.g., as a B-roll, thumbnail, intro clip, reference, etc). Return ONLY a JSON array of strings, one per item, in the same order. No extra text.`,
-              },
-              {
-                role: "user",
-                content: `Topic: "${searchQuery}"\n\nMedia items:\n${summaryPrompt.join("\n")}`,
-              },
-            ],
-          });
-
-        const rawSummary = summaryCompletion.choices[0].message.content.trim();
-
-        // Extract just the array part to avoid JSON.parse errors from conversational filler
-        const match = rawSummary.match(/\[[\s\S]*\]/);
-        const cleanSummary = match ? match[0] : "[]";
-
-        const descriptions = JSON.parse(cleanSummary);
-
-        if (Array.isArray(descriptions)) {
-          mediaResults = mediaResults.map((m, i) => ({
-            ...m,
-            description: descriptions[i] || null,
-          }));
-        }
-      } catch (err) {
-        console.error("Media summary generation error:", err.message);
-        // Non-critical: descriptions simply won't appear
-      }
-    }
-
-    // 4. Save Assistant Message
     const assistantMessage = await Message.create({
       conversationId: conversation._id,
       role: "assistant",
       content: aiContent,
-      mediaResults: mediaResults,
-      modelUsed: req.body.model || "grok-4.5",
+      mediaResults,
+      modelUsed: model || "grok-4",
     });
 
-    // Update conversation updatedAt timestamp
     conversation.updatedAt = new Date();
     await conversation.save();
 
-    res.status(201).json({
-      conversationId: conversation._id,
-      userMessage,
-      assistantMessage,
-    });
+    res.status(201).json({ conversationId: conversation._id, userMessage, assistantMessage });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -408,22 +503,16 @@ export const editChatMessage = async (req, res) => {
   try {
     const { conversationId, messageId, content, model } = req.body;
 
-    const targetMessage = await Message.findOne({
-      _id: messageId,
-      conversationId,
-    });
+    const targetMessage = await Message.findOne({ _id: messageId, conversationId });
     if (!targetMessage) {
       return res.status(404).json({ message: "Target message not found" });
     }
 
-    // Delete the target message and all messages that came after it in this conversation
     await Message.deleteMany({
       conversationId,
       createdAt: { $gte: targetMessage.createdAt },
     });
 
-    // Now simply forward the modified request to handleChatMessage
-    // which will act as if the user just sent this new content at this point in the timeline
     req.body.message = content;
     return handleChatMessage(req, res);
   } catch (error) {
