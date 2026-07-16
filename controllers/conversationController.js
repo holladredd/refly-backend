@@ -159,12 +159,17 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
     let searchQuery = content;
 
     try {
+      const selectedModel = req.body.model || 'grok-4.5';
+      // Route to the correct API key based on model version
+      const apiKey = selectedModel.startsWith('grok-4')
+        ? (process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY)
+        : process.env.GROK_API_KEY;
+
       const openai = new OpenAI({
-        apiKey: process.env.GROK_API_KEY,
-        baseURL: "https://api.x.ai/v1",
+        apiKey,
+        baseURL: 'https://api.x.ai/v1',
       });
 
-      const selectedModel = req.body.model || "grok-4.5";
       const completion = await openai.chat.completions.create({
         model: selectedModel,
         messages: messagesForGrok,
@@ -331,8 +336,8 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
     if (mediaResults.length > 0 && process.env.GROK_API_KEY) {
       try {
         const openaiForSummary = new OpenAI({
-          apiKey: process.env.GROK_API_KEY,
-          baseURL: "https://api.x.ai/v1",
+          apiKey: process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY,
+          baseURL: 'https://api.x.ai/v1',
         });
         const summaryPrompt = mediaResults.map(
           (m, i) =>
