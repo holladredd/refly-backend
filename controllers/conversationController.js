@@ -183,10 +183,10 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
     // 3. Fetch Real Media (Pexels + YouTube)
     let mediaResults = [];
     
-    // 3a. Search Pexels
+    // 3a. Search Pexels Videos
     if (process.env.PEXELS_API_KEY) {
       try {
-        const pexelsRes = await axios.get(`https://api.pexels.com/videos/search?query=${encodeURIComponent(searchQuery)}&per_page=2`, {
+        const pexelsRes = await axios.get(`https://api.pexels.com/videos/search?query=${encodeURIComponent(searchQuery)}&per_page=15`, {
           headers: {
             Authorization: process.env.PEXELS_API_KEY
           }
@@ -194,7 +194,7 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
         
         if (pexelsRes.data && pexelsRes.data.videos) {
           const pexelsVideos = pexelsRes.data.videos.map(video => ({
-            id: video.id.toString(),
+            id: `px-v-${video.id}`,
             title: `Stock Video: ${searchQuery}`,
             thumbnail: video.image,
             url: video.url,
@@ -206,6 +206,29 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
           }));
           mediaResults = [...mediaResults, ...pexelsVideos];
         }
+
+        // Search Pexels Images
+        const pexelsImgRes = await axios.get(`https://api.pexels.com/v1/search?query=${encodeURIComponent(searchQuery)}&per_page=15`, {
+          headers: {
+            Authorization: process.env.PEXELS_API_KEY
+          }
+        });
+
+        if (pexelsImgRes.data && pexelsImgRes.data.photos) {
+          const pexelsImages = pexelsImgRes.data.photos.map(photo => ({
+            id: `px-i-${photo.id}`,
+            title: `Stock Photo: ${searchQuery}`,
+            thumbnail: photo.src.medium,
+            url: photo.url,
+            previewUrl: photo.src.large,
+            source: 'Pexels',
+            author: photo.photographer,
+            type: 'image',
+            license: 'Free to use',
+          }));
+          mediaResults = [...mediaResults, ...pexelsImages];
+        }
+
       } catch (err) {
         console.error('Pexels API Error:', err.message);
       }
@@ -217,9 +240,9 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
     try {
       const ytRes = await ytSearch(searchQuery);
       if (ytRes && ytRes.videos && ytRes.videos.length > 0) {
-        // Take the top 2 YouTube videos
-        const topYtVideos = ytRes.videos.slice(0, 2).map(video => ({
-          id: video.videoId,
+        // Take the top 10 YouTube videos
+        const topYtVideos = ytRes.videos.slice(0, 10).map(video => ({
+          id: `yt-${video.videoId}`,
           title: video.title,
           thumbnail: video.thumbnail,
           url: video.url,
@@ -234,6 +257,9 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
     } catch (err) {
       console.error('YouTube Search Error:', err.message);
     }
+
+    // Randomize the mediaResults array so it's a mix of videos and images
+    mediaResults = mediaResults.sort(() => Math.random() - 0.5);
 
     // 4. Save Assistant Message
     const assistantMessage = await Message.create({
