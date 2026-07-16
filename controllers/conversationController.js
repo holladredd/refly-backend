@@ -397,3 +397,31 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
     res.status(500).json({ message: error.message });
   }
 };
+
+// @desc    Edit/Resend a message
+// @route   POST /api/chat/edit
+// @access  Private
+export const editChatMessage = async (req, res) => {
+  try {
+    const { conversationId, messageId, content, model } = req.body;
+
+    const targetMessage = await Message.findOne({ _id: messageId, conversationId });
+    if (!targetMessage) {
+      return res.status(404).json({ message: 'Target message not found' });
+    }
+
+    // Delete the target message and all messages that came after it in this conversation
+    await Message.deleteMany({
+      conversationId,
+      createdAt: { $gte: targetMessage.createdAt }
+    });
+
+    // Now simply forward the modified request to handleChatMessage
+    // which will act as if the user just sent this new content at this point in the timeline
+    req.body.message = content; 
+    return handleChatMessage(req, res);
+
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};

@@ -14,6 +14,7 @@ dotenv.config();
 connectDB();
 
 const app = express();
+app.set('trust proxy', 1); // Allow secure cookies behind proxies like Render
 
 // Allowed origins — local dev + deployed frontend
 const allowedOrigins = [
