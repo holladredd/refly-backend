@@ -2,6 +2,7 @@ import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import OpenAI from 'openai';
 import axios from 'axios';
+import ytSearch from 'yt-search';
 
 // @desc    Create new conversation
 // @route   POST /api/conversations
@@ -160,7 +161,7 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
       });
 
       const completion = await openai.chat.completions.create({
-        model: 'grok-beta',
+        model: 'grok-2-latest',
         messages: messagesForGrok,
       });
 
@@ -178,18 +179,20 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
       aiContent = `Grok API Error: ${error.message}. Please ensure GROK_API_KEY is set.`;
     }
 
-    // 3. Fetch Real Media from Pexels
+    // 3. Fetch Real Media (Pexels + YouTube)
     let mediaResults = [];
+    
+    // 3a. Search Pexels
     if (process.env.PEXELS_API_KEY) {
       try {
-        const pexelsRes = await axios.get(`https://api.pexels.com/videos/search?query=${encodeURIComponent(searchQuery)}&per_page=4`, {
+        const pexelsRes = await axios.get(`https://api.pexels.com/videos/search?query=${encodeURIComponent(searchQuery)}&per_page=2`, {
           headers: {
             Authorization: process.env.PEXELS_API_KEY
           }
         });
         
         if (pexelsRes.data && pexelsRes.data.videos) {
-          mediaResults = pexelsRes.data.videos.map(video => ({
+          const pexelsVideos = pexelsRes.data.videos.map(video => ({
             id: video.id.toString(),
             title: `Stock Video: ${searchQuery}`,
             thumbnail: video.image,
@@ -200,12 +203,35 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
             type: 'video',
             license: 'Free to use',
           }));
+          mediaResults = [...mediaResults, ...pexelsVideos];
         }
       } catch (err) {
         console.error('Pexels API Error:', err.message);
       }
     } else {
       console.warn('PEXELS_API_KEY is not set in environment variables.');
+    }
+
+    // 3b. Search YouTube
+    try {
+      const ytRes = await ytSearch(searchQuery);
+      if (ytRes && ytRes.videos && ytRes.videos.length > 0) {
+        // Take the top 2 YouTube videos
+        const topYtVideos = ytRes.videos.slice(0, 2).map(video => ({
+          id: video.videoId,
+          title: video.title,
+          thumbnail: video.thumbnail,
+          url: video.url,
+          previewUrl: video.url, // YouTube doesn't give raw mp4 for previews without scraping deeply, so we use the video url
+          source: 'YouTube',
+          author: video.author.name,
+          type: 'video',
+          license: 'Standard YouTube License',
+        }));
+        mediaResults = [...mediaResults, ...topYtVideos];
+      }
+    } catch (err) {
+      console.error('YouTube Search Error:', err.message);
     }
 
     // 4. Save Assistant Message
