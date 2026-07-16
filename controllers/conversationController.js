@@ -359,8 +359,11 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
           });
 
         const rawSummary = summaryCompletion.choices[0].message.content.trim();
-        // Strip markdown code fences if present
-        const cleanSummary = rawSummary.replace(/```json|```/g, "").trim();
+        
+        // Extract just the array part to avoid JSON.parse errors from conversational filler
+        const match = rawSummary.match(/\[[\s\S]*\]/);
+        const cleanSummary = match ? match[0] : "[]";
+        
         const descriptions = JSON.parse(cleanSummary);
 
         if (Array.isArray(descriptions)) {
