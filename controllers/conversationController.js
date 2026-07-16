@@ -160,8 +160,9 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
         baseURL: 'https://api.x.ai/v1',
       });
 
+      const selectedModel = req.body.model || 'grok-2-latest';
       const completion = await openai.chat.completions.create({
-        model: 'grok-2-latest',
+        model: selectedModel,
         messages: messagesForGrok,
       });
 
@@ -240,6 +241,7 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
       role: 'assistant',
       content: aiContent,
       mediaResults: mediaResults,
+      modelUsed: req.body.model || 'grok-2-latest',
     });
 
     // Update conversation updatedAt timestamp

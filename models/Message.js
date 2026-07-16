@@ -19,6 +19,10 @@ const messageSchema = new mongoose.Schema({
     type: Array,
     default: [],
   },
+  modelUsed: {
+    type: String,
+    default: 'grok-2-latest',
+  },
 }, {
   timestamps: true,
 });
