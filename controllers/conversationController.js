@@ -159,15 +159,15 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
     let searchQuery = content;
 
     try {
-      const selectedModel = req.body.model || 'grok-4.5';
+      const selectedModel = req.body.model || "grok-4.5";
       // Route to the correct API key based on model version
-      const apiKey = selectedModel.startsWith('grok-4')
-        ? (process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY)
+      const apiKey = selectedModel.startsWith("grok-4")
+        ? process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY
         : process.env.GROK_API_KEY;
 
       const openai = new OpenAI({
         apiKey,
-        baseURL: 'https://api.x.ai/v1',
+        baseURL: "https://api.x.ai/v1",
       });
 
       const completion = await openai.chat.completions.create({
@@ -337,7 +337,7 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
       try {
         const openaiForSummary = new OpenAI({
           apiKey: process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY,
-          baseURL: 'https://api.x.ai/v1',
+          baseURL: "https://api.x.ai/v1",
         });
         const summaryPrompt = mediaResults.map(
           (m, i) =>
@@ -359,11 +359,11 @@ IMPORTANT: You MUST append a 1-3 word search query at the very end of your respo
           });
 
         const rawSummary = summaryCompletion.choices[0].message.content.trim();
-        
+
         // Extract just the array part to avoid JSON.parse errors from conversational filler
         const match = rawSummary.match(/\[[\s\S]*\]/);
         const cleanSummary = match ? match[0] : "[]";
-        
+
         const descriptions = JSON.parse(cleanSummary);
 
         if (Array.isArray(descriptions)) {
@@ -408,22 +408,24 @@ export const editChatMessage = async (req, res) => {
   try {
     const { conversationId, messageId, content, model } = req.body;
 
-    const targetMessage = await Message.findOne({ _id: messageId, conversationId });
+    const targetMessage = await Message.findOne({
+      _id: messageId,
+      conversationId,
+    });
     if (!targetMessage) {
-      return res.status(404).json({ message: 'Target message not found' });
+      return res.status(404).json({ message: "Target message not found" });
     }
 
     // Delete the target message and all messages that came after it in this conversation
     await Message.deleteMany({
       conversationId,
-      createdAt: { $gte: targetMessage.createdAt }
+      createdAt: { $gte: targetMessage.createdAt },
     });
 
     // Now simply forward the modified request to handleChatMessage
     // which will act as if the user just sent this new content at this point in the timeline
-    req.body.message = content; 
+    req.body.message = content;
     return handleChatMessage(req, res);
-
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
