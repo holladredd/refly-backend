@@ -204,8 +204,8 @@ async function fetchMediaResults(searchQuery) {
     console.error("YouTube Search Error:", err.message);
   }
 
-  // Randomize and limit to 20
-  return mediaResults.sort(() => Math.random() - 0.5).slice(0, 20);
+  // Randomize and limit to 10 for description enrichment performance
+  return mediaResults.sort(() => Math.random() - 0.5).slice(0, 10);
 }
 
 // ─── Helper: generate per-item description + usage tip via Grok ───────────────
@@ -227,7 +227,7 @@ async function enrichWithDescriptions(mediaResults, searchQuery) {
       .join("\n");
 
     const summaryCompletion = await openaiForSummary.chat.completions.create({
-      model: "grok-4",
+      model: "grok-2-1212", // stable model available on standard key tier
       messages: [
         {
           role: "system",
@@ -259,7 +259,8 @@ Return ONLY a valid JSON array of these objects, one per item in the same order.
       }));
     }
   } catch (err) {
-    console.error("Media description error:", err.message);
+    console.error("Media description error:", err.status, err.message);
+    // Non-critical — return media without descriptions rather than failing
   }
 
   return mediaResults;
@@ -328,11 +329,17 @@ IMPORTANT: At the very end of your response, append a 1-4 word search query insi
       ...formattedHistory,
     ];
 
-    // Pick API key based on model
+    // Pick API key and actual model name based on selection
     const selectedModel = model || "grok-4";
-    const apiKey = selectedModel.startsWith("grok-4")
-      ? process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY
-      : process.env.GROK_API_KEY;
+    let apiKey, apiModel;
+    if (selectedModel === "grok-4.5") {
+      apiKey = process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY;
+      apiModel = "grok-4.5";
+    } else {
+      // Default "grok-4" routes to standard key with grok-2-1212
+      apiKey = process.env.GROK_API_KEY;
+      apiModel = "grok-2-1212";
+    }
 
     const openai = new OpenAI({ apiKey, baseURL: "https://api.x.ai/v1" });
 
@@ -342,7 +349,7 @@ IMPORTANT: At the very end of your response, append a 1-4 word search query insi
 
     try {
       const stream = await openai.chat.completions.create({
-        model: selectedModel,
+        model: apiModel,
         messages: messagesForGrok,
         stream: true,
       });
@@ -454,13 +461,18 @@ export const handleChatMessage = async (req, res) => {
 
     try {
       const selectedModel = model || "grok-4";
-      const apiKey = selectedModel.startsWith("grok-4")
-        ? process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY
-        : process.env.GROK_API_KEY;
+      let apiKey, apiModel;
+      if (selectedModel === "grok-4.5") {
+        apiKey = process.env.GROK_API_KEY_V4 || process.env.GROK_API_KEY;
+        apiModel = "grok-4.5";
+      } else {
+        apiKey = process.env.GROK_API_KEY;
+        apiModel = "grok-2-1212";
+      }
 
       const openai = new OpenAI({ apiKey, baseURL: "https://api.x.ai/v1" });
       const completion = await openai.chat.completions.create({
-        model: selectedModel,
+        model: apiModel,
         messages: messagesForGrok,
       });
 
@@ -472,8 +484,8 @@ export const handleChatMessage = async (req, res) => {
         aiContent = aiContent.replace(queryRegex, "").trim();
       }
     } catch (error) {
-      console.error("Grok API Error:", error.message);
-      aiContent = `Grok API Error: ${error.message}. Please ensure GROK_API_KEY is set.`;
+      console.error("Grok API Error:", error.status, error.message);
+      aiContent = "I'm having trouble connecting to the AI right now. Here are some relevant media results for you.";
     }
 
     let mediaResults = await fetchMediaResults(searchQuery);
