@@ -19,12 +19,13 @@ const loginUser = async (req, res) => {
     return res.status(401).json({ message: 'Incorrect password. Please try again.' });
   }
 
-  generateToken(res, user._id);
+  const token = generateToken(res, user._id);
   res.json({
     _id: user._id,
     name: user.name,
     email: user.email,
     avatar: user.avatar,
+    token,
   });
 };
 
@@ -51,13 +52,13 @@ const registerUser = async (req, res) => {
   });
 
   if (user) {
-    generateToken(res, user._id);
-
+    const token = generateToken(res, user._id);
     res.status(201).json({
       _id: user._id,
       name: user.name,
       email: user.email,
       avatar: user.avatar,
+      token, // sent for localStorage fallback (cross-domain auth)
     });
   } else {
     res.status(400).json({ message: 'Invalid user data' });

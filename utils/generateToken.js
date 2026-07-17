@@ -9,11 +9,15 @@ const generateToken = (res, userId) => {
 
   res.cookie('jwt', token, {
     httpOnly: true,
-    secure: isProduction,           // HTTPS-only in production
-    sameSite: isProduction ? 'none' : 'lax', // cross-site in production (required for Render + Vercel)
-    path: '/',                      // ensure cookie applies to all routes
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days in ms
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
+    path: '/',
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
   });
+
+  // Return the raw token so the controller can send it to the client
+  // The client stores it in localStorage as a Bearer-header fallback
+  return token;
 };
 
 export default generateToken;
